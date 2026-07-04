@@ -11,3 +11,10 @@ public class OrderSystemApplication {
 		SpringApplication.run(OrderSystemApplication.class, args);
 	}
 }
+//    "C:\Program Files\MySQL\MySQL Server 9.6\bin\mysql" -u root -p
+//     USE order_system;
+//     UPDATE product SET stock = 10 WHERE id = 1;
+
+//      docker exec -it redis redis-cli
+//      SET stock:1 10
+//      exit

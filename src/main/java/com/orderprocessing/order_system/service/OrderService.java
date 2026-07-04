@@ -17,6 +17,7 @@ public class OrderService {
 
     private final OrderRepository orderRepository;
     private final RedisTemplate<String, String> redisTemplate;
+    private final StockCacheService stockCacheService;
 
     public Order createOrder(Long userId, Long productId,
                              Integer quantity, String idempotencyKey) {
@@ -29,7 +30,27 @@ public class OrderService {
             return existing.get();
         }
 
-        // Step 2 — Create order as PENDING
+        // Step 2 — PRE-CHECK stock from Redis cache
+        int cachedStock = stockCacheService.getStockFromCache(productId);
+
+        if (cachedStock <= 0) {
+            System.out.println("Pre-check failed — product "
+                    + productId + " is out of stock");
+
+            // Create cancelled order immediately
+            Order order = new Order();
+            order.setUserId(userId);
+            order.setProductId(productId);
+            order.setQuantity(quantity);
+            order.setStatus("CANCELLED");
+            order.setIdempotencyKey(idempotencyKey);
+            return orderRepository.save(order);
+        }
+
+        System.out.println("Pre-check passed — stock available: "
+                + cachedStock + " for product: " + productId);
+
+        // Step 3 — Create order as PENDING
         Order order = new Order();
         order.setUserId(userId);
         order.setProductId(productId);
@@ -39,7 +60,7 @@ public class OrderService {
 
         Order savedOrder = orderRepository.save(order);
 
-        // Step 3 — Fire to order-placed-stream
+        // Step 4 — Fire to order-placed-stream
         Map<String, String> eventData = Map.of(
                 "orderId", savedOrder.getId().toString(),
                 "userId", userId.toString(),

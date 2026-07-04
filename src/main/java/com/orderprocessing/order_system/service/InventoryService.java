@@ -1,7 +1,7 @@
 package com.orderprocessing.order_system.service;
 
-import com.orderprocessing.order_system.Product;
 import com.orderprocessing.order_system.Order;
+import com.orderprocessing.order_system.Product;
 import com.orderprocessing.order_system.repository.OrderRepository;
 import com.orderprocessing.order_system.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
@@ -16,7 +16,6 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 
 @Service
 @RequiredArgsConstructor
@@ -25,6 +24,7 @@ public class InventoryService {
     private final RedisTemplate<String, String> redisTemplate;
     private final OrderRepository orderRepository;
     private final ProductRepository productRepository;
+    private final StockCacheService stockCacheService;
     private String lastReadOffset = "0-0";
 
     @Scheduled(fixedDelay = 1000)
@@ -49,60 +49,64 @@ public class InventoryService {
                 String productId = data.get("productId");
                 String quantity = data.get("quantity");
                 String userId = data.get("userId");
+                int requestedQty = Integer.parseInt(quantity);
 
                 System.out.println("Inventory received order: " + orderId
                         + " product: " + productId);
 
-                String lockKey = "lock:product:" + productId;
-                Boolean locked = redisTemplate.opsForValue()
-                        .setIfAbsent(lockKey, orderId, 10, TimeUnit.SECONDS);
+                // Redis DECR — atomic stock decrement
+                // No lock needed — DECR is atomic by itself
+                String stockKey = "stock:" + productId;
+                Long newStock = redisTemplate.opsForValue()
+                        .decrement(stockKey, requestedQty);
 
-                if (Boolean.TRUE.equals(locked)) {
-                    try {
-                        Optional<Product> productOpt = productRepository
-                                .findById(Long.parseLong(productId));
+                if (newStock != null && newStock >= 0) {
+                    // Stock successfully reserved in Redis
+                    System.out.println("Stock reserved via DECR. "
+                            + "Product: " + productId
+                            + " remaining stock: " + newStock);
 
-                        if (productOpt.isEmpty()) {
-                            updateOrderStatus(orderId, "CANCELLED");
-                            System.out.println("Product not found. Order CANCELLED: " + orderId);
-                            continue;
-                        }
+                    // Update MySQL to match Redis
+                    Optional<Product> productOpt = productRepository
+                            .findById(Long.parseLong(productId));
 
+                    if (productOpt.isPresent()) {
                         Product product = productOpt.get();
-                        int requestedQty = Integer.parseInt(quantity);
-
-                        if (product.getStock() >= requestedQty) {
-                            product.setStock(product.getStock() - requestedQty);
-                            productRepository.save(product);
-                            updateOrderStatus(orderId, "CONFIRMED");
-                            System.out.println("Stock reserved. Order CONFIRMED: " + orderId);
-
-                            // Fire to stock-reserved-stream
-                            Map<String, String> eventData = Map.of(
-                                    "orderId", orderId,
-                                    "userId", userId,
-                                    "productId", productId,
-                                    "quantity", quantity
-                            );
-
-                            MapRecord<String, String, String> newRecord = StreamRecords
-                                    .newRecord()
-                                    .ofMap(eventData)
-                                    .withStreamKey("stock-reserved-stream");
-
-                            redisTemplate.opsForStream().add(newRecord);
-                            System.out.println("Event fired to stock-reserved-stream for order: " + orderId);
-
-                        } else {
-                            updateOrderStatus(orderId, "CANCELLED");
-                            System.out.println("Not enough stock. Order CANCELLED: " + orderId);
-                        }
-                    } finally {
-                        redisTemplate.delete(lockKey);
-                        System.out.println("Lock released for product: " + productId);
+                        product.setStock(newStock.intValue());
+                        productRepository.save(product);
                     }
+
+                    // Update order status to CONFIRMED
+                    updateOrderStatus(orderId, "CONFIRMED");
+                    System.out.println("Order CONFIRMED: " + orderId);
+
+                    // Fire to stock-reserved-stream
+                    Map<String, String> eventData = Map.of(
+                            "orderId", orderId,
+                            "userId", userId,
+                            "productId", productId,
+                            "quantity", quantity
+                    );
+
+                    MapRecord<String, String, String> newRecord = StreamRecords
+                            .newRecord()
+                            .ofMap(eventData)
+                            .withStreamKey("stock-reserved-stream");
+
+                    redisTemplate.opsForStream().add(newRecord);
+                    System.out.println("Event fired to stock-reserved-stream");
+
                 } else {
-                    System.out.println("Could not acquire lock for product: " + productId);
+                    // Stock went negative — restore Redis back
+                    redisTemplate.opsForValue()
+                            .increment(stockKey, requestedQty);
+
+                    System.out.println("Out of stock. DECR restored. "
+                            + "Product: " + productId);
+
+                    // Cancel order
+                    updateOrderStatus(orderId, "CANCELLED");
+                    System.out.println("Order CANCELLED: " + orderId);
                 }
             }
         } catch (Exception e) {
