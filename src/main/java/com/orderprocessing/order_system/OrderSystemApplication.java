@@ -1,7 +1,7 @@
 package com.orderprocessing.order_system;
 
 import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;    //   1. Start Docker Desktop  2. docker start redis
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
@@ -11,10 +11,10 @@ public class OrderSystemApplication {
 		SpringApplication.run(OrderSystemApplication.class, args);
 	}
 }
-//    "C:\Program Files\MySQL\MySQL Server 9.6\bin\mysql" -u root -p
-//     USE order_system;
-//     UPDATE product SET stock = 10 WHERE id = 1;
 
-//      docker exec -it redis redis-cli
-//      SET stock:1 10
-//      exit
+
+
+
+
+
+
